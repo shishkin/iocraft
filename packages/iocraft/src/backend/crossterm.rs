@@ -339,6 +339,7 @@ pub(crate) struct CrosstermBackend<'a> {
     output: Output,
     fullscreen: bool,
     mouse_capture: bool,
+    bracketed_paste: bool,
     raw_mode_enabled: bool,
     supports_keyboard_enhancement: bool,
     enabled_keyboard_enhancement: bool,
@@ -505,6 +506,20 @@ impl TerminalBackend for CrosstermBackend<'_> {
                     self.dest.execute(event::EnableMouseCapture)?;
                 } else {
                     self.dest.execute(event::DisableMouseCapture)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn set_bracketed_paste(&mut self, enabled: bool) -> io::Result<()> {
+        if self.bracketed_paste != enabled {
+            self.bracketed_paste = enabled;
+            if self.raw_mode_enabled {
+                if enabled {
+                    self.dest.execute(event::EnableBracketedPaste)?;
+                } else {
+                    self.dest.execute(event::DisableBracketedPaste)?;
                 }
             }
         }
@@ -719,6 +734,7 @@ impl TerminalBackend for CrosstermBackend<'_> {
                     Ok(Event::Resize(width, height)) => {
                         Some(Ok(TerminalEvent::Resize(width, height)))
                     }
+                    Ok(Event::Paste(data)) => Some(Ok(TerminalEvent::BracketedPaste(data))),
                     // Ignore crossterm events that iocraft does not expose.
                     Ok(_) => None,
                     Err(error) => Some(Err(error)),
@@ -755,6 +771,7 @@ impl<'a> CrosstermBackend<'a> {
             input_is_terminal,
             fullscreen: false,
             mouse_capture: false,
+            bracketed_paste: false,
             raw_mode_enabled: false,
             supports_keyboard_enhancement,
             enabled_keyboard_enhancement: false,
@@ -777,12 +794,18 @@ impl<'a> CrosstermBackend<'a> {
                     ))?;
                     self.enabled_keyboard_enhancement = true;
                 }
+                if self.bracketed_paste {
+                    self.dest.execute(event::EnableBracketedPaste)?;
+                }
                 if self.mouse_capture {
                     self.dest.execute(event::EnableMouseCapture)?;
                 }
                 terminal::enable_raw_mode()?;
             } else {
                 terminal::disable_raw_mode()?;
+                if self.bracketed_paste {
+                    self.dest.execute(event::DisableBracketedPaste)?;
+                }
                 if self.mouse_capture {
                     self.dest.execute(event::DisableMouseCapture)?;
                 }
@@ -1165,6 +1188,44 @@ mod tests {
         assert_eq!(term.passthrough_appended_newline, None);
     }
 
+    #[test]
+    fn test_set_bracketed_paste_emits_sequence_in_raw_mode() {
+        let (dest, dest_buf) = new_test_writer();
+        let mut term = new_inline_term(dest, 0);
+        term.raw_mode_enabled = true;
+
+        term.set_bracketed_paste(true).unwrap();
+        let written = String::from_utf8(dest_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            written, "\x1b[?2004h",
+            "expected EnableBracketedPaste escape sequence"
+        );
+
+        term.set_bracketed_paste(true).unwrap();
+        let written = String::from_utf8(dest_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            written, "\x1b[?2004h",
+            "set_bracketed_paste must be idempotent"
+        );
+
+        term.set_bracketed_paste(false).unwrap();
+        let written = String::from_utf8(dest_buf.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            written, "\x1b[?2004h\x1b[?2004l",
+            "expected DisableBracketedPaste escape sequence"
+        );
+    }
+
+    #[test]
+    fn test_set_bracketed_paste_does_not_emit_without_raw_mode() {
+        let (dest, dest_buf) = new_test_writer();
+        let mut term = new_inline_term(dest, 0);
+
+        term.set_bracketed_paste(true).unwrap();
+        let written = String::from_utf8(dest_buf.lock().unwrap().clone()).unwrap();
+        assert!(written.is_empty(), "must not emit without raw mode");
+    }
+
     fn render_canvas_to_vt(canvas: &Canvas, cols: usize, rows: usize) -> avt::Vt {
         render_canvases_to_vt(&[canvas], cols, rows)
     }
@@ -1358,6 +1419,7 @@ mod tests {
             output: Output::Stdout,
             fullscreen: true,
             mouse_capture: false,
+            bracketed_paste: false,
             raw_mode_enabled: false,
             supports_keyboard_enhancement: false,
             enabled_keyboard_enhancement: false,
@@ -1385,6 +1447,7 @@ mod tests {
             output: Output::Stdout,
             fullscreen: false,
             mouse_capture: false,
+            bracketed_paste: false,
             raw_mode_enabled: false,
             supports_keyboard_enhancement: false,
             enabled_keyboard_enhancement: false,
